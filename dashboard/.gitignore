@@ -1,0 +1,15 @@
+# dependencies
+node_modules/
+
+# build outputs
+dist/
+.vite/
+*.tsbuildinfo
+
+# environment variables
+.env
+.env.local
+!.env.example
+
+# logs
+*.log

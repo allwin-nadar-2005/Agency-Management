@@ -1,0 +1,146 @@
+// apps/api/prisma/schema.prisma
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ADMIN
+  PM
+  DEVELOPER
+}
+
+enum TaskStatus {
+  TODO
+  IN_PROGRESS
+  IN_REVIEW
+  DONE
+}
+
+enum TaskPriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+enum NotificationType {
+  TASK_ASSIGNED
+  TASK_MOVED_TO_REVIEW
+  TASK_OVERDUE
+}
+
+model User {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  passwordHash String
+  name         String
+  role         Role
+  createdAt    DateTime @default(now())
+
+  // Refresh tokens stored server-side so they can be revoked (logout / rotation)
+  refreshTokens RefreshToken[]
+
+  // PM: projects they created / own
+  projectsOwned Project[] @relation("ProjectOwner")
+
+  // Developer: tasks assigned to them
+  tasksAssigned Task[] @relation("TaskAssignee")
+
+  activityLogs  ActivityLog[] @relation("ActivityActor")
+  notifications Notification[] @relation("NotificationRecipient")
+
+  @@index([role])
+}
+
+model RefreshToken {
+  id        String   @id @default(uuid())
+  tokenHash String   @unique // never store raw token
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+}
+
+model Project {
+  id          String   @id @default(uuid())
+  name        String
+  description String?
+  clientName  String
+  ownerId     String // PM who created it — ownership check target
+  owner       User     @relation("ProjectOwner", fields: [ownerId], references: [id])
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  tasks        Task[]
+  activityLogs ActivityLog[]
+
+  @@index([ownerId])
+}
+
+model Task {
+  id          String       @id @default(uuid())
+  projectId   String
+  project     Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  title       String
+  description String?
+  status      TaskStatus   @default(TODO)
+  priority    TaskPriority @default(MEDIUM)
+  assigneeId  String?
+  assignee    User?        @relation("TaskAssignee", fields: [assigneeId], references: [id])
+  dueDate     DateTime?
+  isOverdue   Boolean      @default(false) // set only by the node-cron job, never derived on read
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  activityLogs  ActivityLog[]
+  notifications Notification[]
+
+  @@index([assigneeId])
+  @@index([projectId])
+  @@index([status])
+  @@index([dueDate])
+}
+
+// Immutable append-only log — source of truth for the live feed AND missed-event catchup.
+// Never computed/derived: every task status change writes one row here.
+model ActivityLog {
+  id        String   @id @default(uuid())
+  projectId String
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  taskId    String?
+  task      Task?    @relation(fields: [taskId], references: [id], onDelete: SetNull)
+  actorId   String
+  actor     User     @relation("ActivityActor", fields: [actorId], references: [id])
+  action    String // e.g. "TASK_STATUS_CHANGED", "TASK_CREATED", "TASK_ASSIGNED"
+  fromValue String? // e.g. previous status
+  toValue   String? // e.g. new status
+  message   String // pre-rendered human-readable string per the feed format spec
+  createdAt DateTime @default(now())
+
+  @@index([projectId, createdAt])
+  @@index([createdAt]) // for global admin feed + catchup ordering
+}
+
+model Notification {
+  id          String           @id @default(uuid())
+  recipientId String
+  recipient   User             @relation("NotificationRecipient", fields: [recipientId], references: [id], onDelete: Cascade)
+  taskId      String?
+  task        Task?            @relation(fields: [taskId], references: [id], onDelete: SetNull)
+  type        NotificationType
+  message     String
+  read        Boolean          @default(false)
+  createdAt   DateTime         @default(now())
+
+  @@index([recipientId, read])
+  @@index([recipientId, createdAt])
+}
